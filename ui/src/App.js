@@ -6,6 +6,7 @@ import LoginPage from './pages/LoginPage';
 import HomePage from './pages/HomePage';
 import Header from './components/Header';
 import PrivateRoute from './utils/PrivateRoute';
+import { AuthProvider } from './context/AuthContext';
 
 
 class App extends Component {
@@ -14,12 +15,14 @@ class App extends Component {
       <div className="App">
         {/* <h1>hi their</h1> */}
         <Router>
-          <Header/>
-          <Routes>
-            <Route path='/' element={
-              <PrivateRoute Child = {HomePage}/> }  exact/>
-            <Route element={<LoginPage/>} path="/login" />
-          </Routes>
+          <AuthProvider>
+            <Header/>
+            <Routes>
+              <Route path='/' element={
+                <PrivateRoute Child = {HomePage}/> }  exact/>
+              <Route element={<LoginPage/>} path="/login" />
+            </Routes>
+          </AuthProvider>
         </Router>
       </div>
     );
