@@ -1,8 +1,7 @@
 import { createContext, useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
-import AuthContext from "./AuthContext";
-
+const AuthContext = createContext();
 const API_URL = process.env.REACT_APP_API_URL || "http://localhost:8000/api";
 const REFRESH_INTERVAL_MS = 60 * 1000;
 
@@ -83,6 +82,7 @@ export const AuthProvider = ({ children }) => {
                 if (payload?.exp && payload.exp * 1000 > Date.now()) {
                     throw error;
                 }
+
                 const refreshed = await refreshAccessToken(authToken.refresh);
                 currentToken = refreshed.access;
                 currentUser = await fetchCurrentUser(currentToken);
@@ -99,27 +99,33 @@ export const AuthProvider = ({ children }) => {
     const loginUser = async (event) => {
         event.preventDefault();
 
-        const response = await fetch(`${API_URL}/token/`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                username: event.target.username.value,
-                password: event.target.password.value,
-            }),
-        });
+        try {
+            const response = await fetch(`${API_URL}/token/`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    username: event.target.username.value,
+                    password: event.target.password.value,
+                }),
+            });
 
-        const data = await response.json();
-        if (!response.ok) {
-            throw new Error(data.detail || "Unable to log in");
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.detail || "Unable to log in");
+            }
+
+            const currentUser = await fetchCurrentUser(data.access);
+            setAuthToken(data);
+            localStorage.setItem("authToken", JSON.stringify(data));
+            setUser(currentUser);
+            navigate("/");
+        } catch (error) {
+            clearSession();
+            throw error;
         }
-
-        setAuthToken(data);
-        localStorage.setItem("authToken", JSON.stringify(data));
-        setUser(await fetchCurrentUser(data.access));
-        navigate("/");
     };
 
-    const logoutUser = async () => {
+    const logoutUser = useCallback(async () => {
         try {
             if (authToken?.refresh) {
                 await fetch(`${API_URL}/token/logout/`, {
@@ -132,11 +138,11 @@ export const AuthProvider = ({ children }) => {
             clearSession();
             navigate("/login");
         }
-    };
+    }, [authToken, clearSession, navigate]);
 
     useEffect(() => {
         validateSession();
-    }, []);
+    }, [validateSession]);
 
     useEffect(() => {
         if (!authToken?.access || !authToken?.refresh) {
@@ -160,7 +166,7 @@ export const AuthProvider = ({ children }) => {
         }, REFRESH_INTERVAL_MS);
 
         return () => clearInterval(interval);
-    }, [authToken, fetchCurrentUser, refreshAccessToken]);
+    }, [authToken, fetchCurrentUser, logoutUser, refreshAccessToken]);
 
     return (
         <AuthContext.Provider value={{ user, loading, loginUser, logoutUser }}>
