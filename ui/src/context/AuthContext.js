@@ -1,105 +1,172 @@
-import { createContext, useEffect, useState } from "react";
-import jwt_decode from "jwt-decode"
-import { useNavigate } from 'react-router-dom'
-const AuthContext = createContext()
+import { createContext, useCallback, useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 
-export default AuthContext;
+import AuthContext from "./AuthContext";
 
-export const AuthProvider = ({children}) =>{
+const API_URL = process.env.REACT_APP_API_URL || "http://localhost:8000/api";
+const REFRESH_INTERVAL_MS = 60 * 1000;
 
-    let [authToken, setAuthToken] = useState(()=>
-        localStorage.getItem('authToken') ? JSON.parse(
-            localStorage.getItem('authToken')
-            ):null
-    )
-    let [user, setUser] = useState( ()=>
-        localStorage.getItem('authToken') ? jwt_decode(
-            localStorage.getItem('authToken')
-            ):null
-    )
+const parseJwt = (token) => {
+    try {
+        const payload = token.split(".")[1];
+        const normalized = payload.replace(/-/g, "+").replace(/_/g, "/");
+        return JSON.parse(window.atob(normalized));
+    } catch (error) {
+        return null;
+    }
+};
 
-    let [loading, setLoading] = useState(true)
-
-    //  setting up token auth from local storage
-    const history = useNavigate()
-
-    let loginUser = async(e ) => {
-        e.preventDefault()
-        // console.log('form submitted');
-        let response = await fetch('http://localhost:8000/api/token/',{
-          method:'POST',
-          headers:{
-              'Content-Type':'application/json'
-          },  
-          body:JSON.stringify({
-              'username':e.target.username.value,
-              'password':e.target.password.value
-          })
-        })
-        let data = await response.json()
-        if(response.status === 200){
-            setAuthToken(data)
-            setUser(jwt_decode(data.access))
-            localStorage.setItem('authToken', JSON.stringify(data))
-            history('/')
-        }else{
-            alert('Something went wrong!')
+export const AuthProvider = ({ children }) => {
+    const [authToken, setAuthToken] = useState(() => {
+        const stored = localStorage.getItem("authToken");
+        try {
+            return stored ? JSON.parse(stored) : null;
+        } catch (error) {
+            localStorage.removeItem("authToken");
+            return null;
         }
-    }
+    });
+    const [user, setUser] = useState(null);
+    const [loading, setLoading] = useState(true);
+    const navigate = useNavigate();
 
-    let logoutUser = () => {
-        setAuthToken(null)
-        setUser(null)
-        localStorage.removeItem('authToken')
-        history(to='/login')
-    }
+    const clearSession = useCallback(() => {
+        setAuthToken(null);
+        setUser(null);
+        localStorage.removeItem("authToken");
+    }, []);
 
-    let updateToken = async () => {
-        console.log('token updated')
-        let response = await fetch('http://localhost:8000/api/token/refresh/',{
-            method:'POST',
-            headers:{
-                'Content-Type':'application/json'
-            },  
-            body:JSON.stringify({
-                'refresh':authToken.refresh
-            })
-          })
-          let data = await response.json()
-          if(response.status === 200){
-            setAuthToken(data)
-            setUser(jwt_decode(data.access))
-            localStorage.setItem('authToken', JSON.stringify(data))
-          }else{
-              logoutUser()
-          }
-    }
+    const refreshAccessToken = useCallback(async (refreshToken) => {
+        const response = await fetch(`${API_URL}/token/refresh/`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ refresh: refreshToken }),
+        });
 
+        if (!response.ok) {
+            throw new Error("Refresh token rejected");
+        }
 
-    let contextData = {
-        user:user,
-        loginUser:loginUser,
-        logoutUser:logoutUser
-    }
+        const data = await response.json();
+        setAuthToken(data);
+        localStorage.setItem("authToken", JSON.stringify(data));
+        return data;
+    }, []);
+
+    const fetchCurrentUser = useCallback(async (token) => {
+        const response = await fetch(`${API_URL}/me/`, {
+            headers: { Authorization: `Bearer ${token}` },
+        });
+
+        if (!response.ok) {
+            throw new Error("Access token rejected");
+        }
+
+        return response.json();
+    }, []);
+
+    const validateSession = useCallback(async () => {
+        if (!authToken?.access || !authToken?.refresh) {
+            clearSession();
+            setLoading(false);
+            return;
+        }
+
+        try {
+            let currentToken = authToken.access;
+            let currentUser;
+
+            try {
+                currentUser = await fetchCurrentUser(currentToken);
+            } catch (error) {
+                const payload = parseJwt(currentToken);
+                if (payload?.exp && payload.exp * 1000 > Date.now()) {
+                    throw error;
+                }
+                const refreshed = await refreshAccessToken(authToken.refresh);
+                currentToken = refreshed.access;
+                currentUser = await fetchCurrentUser(currentToken);
+            }
+
+            setUser(currentUser);
+        } catch (error) {
+            clearSession();
+        } finally {
+            setLoading(false);
+        }
+    }, [authToken, clearSession, fetchCurrentUser, refreshAccessToken]);
+
+    const loginUser = async (event) => {
+        event.preventDefault();
+
+        const response = await fetch(`${API_URL}/token/`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                username: event.target.username.value,
+                password: event.target.password.value,
+            }),
+        });
+
+        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(data.detail || "Unable to log in");
+        }
+
+        setAuthToken(data);
+        localStorage.setItem("authToken", JSON.stringify(data));
+        setUser(await fetchCurrentUser(data.access));
+        navigate("/");
+    };
+
+    const logoutUser = async () => {
+        try {
+            if (authToken?.refresh) {
+                await fetch(`${API_URL}/token/logout/`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ refresh: authToken.refresh }),
+                });
+            }
+        } finally {
+            clearSession();
+            navigate("/login");
+        }
+    };
 
     useEffect(() => {
-        let updateTime = (t) => {
-            return 1000* 60 * t
+        validateSession();
+    }, []);
+
+    useEffect(() => {
+        if (!authToken?.access || !authToken?.refresh) {
+            return undefined;
         }
-        let interval = setInterval(() => {
-            if(authToken){
-                updateToken()
+
+        const interval = setInterval(async () => {
+            const payload = parseJwt(authToken.access);
+            const expiresSoon = !payload?.exp || payload.exp * 1000 <= Date.now() + 60 * 1000;
+
+            if (!expiresSoon) {
+                return;
             }
-        }, updateTime(5))
 
-        return() => clearInterval(interval)
+            try {
+                const refreshed = await refreshAccessToken(authToken.refresh);
+                setUser(await fetchCurrentUser(refreshed.access));
+            } catch (error) {
+                await logoutUser();
+            }
+        }, REFRESH_INTERVAL_MS);
 
-    }, [authToken, loading])
+        return () => clearInterval(interval);
+    }, [authToken, fetchCurrentUser, refreshAccessToken]);
 
-    // ----------------------------------------------
-    return(
-        <AuthContext.Provider value={contextData}>
+    return (
+        <AuthContext.Provider value={{ user, loading, loginUser, logoutUser }}>
             {children}
         </AuthContext.Provider>
-    )
-}
+    );
+};
+
+export default AuthContext;
